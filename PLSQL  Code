@@ -1,0 +1,102 @@
+CREATE OR REPLACE PROCEDURE CTXSYS.MARCAREPAGINI(V_ID_CUVANT IN NUMBER)AS
+v_query_id number:=1;
+/*v_rowid ROWID;*/
+v_sursa_LOB clob; /*DE UNDE SE COPIAZA*/
+v_dest_LOB clob; /*UNDE SE COPIAZA*/
+v_cantitate integer;  /*CANTITATEA COPIATA*/
+v_nr integer;
+v_max integer; /*NR DE PAGINI DIN PAGINIMARCATE*/
+v_buffer varchar2(20);
+v_amount integer:=10;
+V_CUVANT VARCHAR2(50);
+/*cursorul este pentru a scoate inregistrarile ce contin cuvantul*/
+
+
+CURSOR CURS IS
+SELECT ROWID FROM PAGINI WHERE CONTAINS(TEXTPAGINA,(SELECT CUVINTE.CUVANT FROM CUVINTE WHERE CUVINTE.ID_CUVANT = V_ID_CUVANT), 1)>0 AND TRUNC(DATAPAGINA)=TRUNC(SYSDATE) order by ID_PAGINA asc ;
+/* se scot rowid pentru paginile ce contin cuvantul cautat */
+begin
+SELECT CUVINTE.CUVANT INTO V_CUVANT  FROM CUVINTE WHERE CUVINTE.ID_CUVANT = V_ID_CUVANT;
+
+DELETE FROM PAGINIMARCATE;
+
+ctx_doc.set_key_type('rowid');
+
+
+for INREG in CURS loop
+
+    /*select seq_marcared.nextval into v_query_id from dual;   NU MERGE SEQ */
+
+    /*select rowid into v_rowid from PAGINI where ID_PAGINA=inreg.ID_PAGINA;*/
+
+    ctx_doc.MARKUP('INDEXPAGINI_IDX',INREG.ROWID,V_CUVANT,'PAGINIMARCATE',v_query_id,false,
+    'html_navigate','<A NAME=ctx%CURNUM><FONT COLOR=RED>','</FONT></A>');
+
+     select PAGINIMARCATE.DOCUMENT into v_sursa_LOB from PAGINIMARCATE where QUERY_ID=v_query_id for update ;
+            v_buffer:='Pagina nr: '||to_char(v_query_id);
+            /* Aici va fi inserat si un rand cu numele ziarului si pagina trebuie in PAGINIMARCATE inca un camp*/
+            dbms_lob.WRITEAPPEND( v_sursa_LOB, length(v_buffer), v_buffer );
+
+            v_query_id:=v_query_id+1;    /*pentru incrementare in tabelul PAGINIMARCATE*/
+  exit when curs%notfound;
+
+end loop;
+
+/*delete from maildoru;*/
+
+select count(QUERY_ID) into v_nr from PAGINIMARCATE;
+if v_nr >0 then
+
+   IF MAILDUPLICAT(V_ID_CUVANT)=FALSE THEN
+
+        SELECT SEQ_MAILURI_ID_MAIL.nextval into v_query_id from dual;
+          INSERT into MAILURI values(V_QUERY_ID,V_ID_CUVANT,EMPTY_CLOB(),SYSDATE,NULL)
+             returning MAILURI.MAIL into v_dest_LOB;
+        SELECT DOCUMENT into v_sursa_LOB from PAGINIMARCATE where QUERY_ID =1;
+          v_cantitate:=dbms_lob.GETLENGTH(v_sursa_LOB );
+          dbms_lob.COPY( v_dest_LOB, v_sursa_LOB, v_cantitate );
+
+   ELSE
+
+  SELECT MAX(ID_MAIL) INTO V_QUERY_ID  FROM MAILURI WHERE MAILURI.ID_CUVANT=V_ID_CUVANT AND TRUNC(MAILURI.DATACREAT)=TRUNC(SYSDATE);
+  UPDATE MAILURI
+  SET MAILURI.ID_CUVANT=V_ID_CUVANT,
+      MAILURI.MAIL=EMPTY_CLOB(),
+      MAILURI.DATACREAT=SYSDATE,
+      MAILURI.DATATRIMIS=NULL
+      WHERE MAILURI.ID_MAIL=V_QUERY_ID returning MAILURI.MAIL into v_dest_LOB;
+         select DOCUMENT into v_sursa_LOB from PAGINIMARCATE where QUERY_ID =1;
+  v_cantitate:=dbms_lob.GETLENGTH(v_sursa_LOB );
+  dbms_lob.COPY( v_dest_LOB, v_sursa_LOB, v_cantitate );
+  END IF;
+commit;
+
+select max(QUERY_ID) into v_max from PAGINIMARCATE;
+  for v_nr in 2..v_max loop
+            select DOCUMENT into v_sursa_LOB from PAGINIMARCATE where QUERY_ID=v_nr;
+
+            select MAIL into v_dest_LOB from MAILURI where ID_MAIL=V_QUERY_ID for update;
+
+            v_Cantitate:=dbms_lob.GETLENGTH( v_sursa_lob )+1;
+
+            dbms_lob.APPEND( v_dest_LOB,v_sursa_LOB);
+  end loop;
+  commit;
+
+  else
+  IF MAILDUPLICAT(V_ID_CUVANT)=FALSE THEN
+       SELECT SEQ_MAILURI_ID_MAIL.nextval into V_QUERY_ID from dual;
+       Insert into MAILURI values(V_QUERY_ID,V_ID_CUVANT,'Cuvantul "'||V_CUVANT||'" nu a fost gasit.',SYSDATE,NULL);
+  ELSE
+     SELECT MAX(ID_MAIL) INTO V_QUERY_ID  FROM MAILURI WHERE MAILURI.ID_CUVANT=V_ID_CUVANT AND TRUNC(MAILURI.DATACREAT)=TRUNC(SYSDATE);
+  UPDATE MAILURI
+  SET MAILURI.ID_CUVANT=V_ID_CUVANT,
+      MAILURI.MAIL='Cuvantul "'||V_CUVANT||'" nu a fost gasit.',
+      MAILURI.DATACREAT=SYSDATE,
+      MAILURI.DATATRIMIS=NULL
+      WHERE MAILURI.ID_MAIL=V_QUERY_ID ;
+      END IF;
+end if;
+
+end;
+/
